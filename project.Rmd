@@ -1,0 +1,329 @@
+---
+title: "pop eco project"
+output: html_document
+date: "2024-10-29"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r packages, include=FALSE}
+options(view = FALSE)
+library(tidyverse)
+library(ggplot2)
+library(biogrowth)
+library(scales)
+library(mgcv)
+library(MuMIn)
+library(kableExtra)
+library(knitr)
+```
+
+```{r loading in data}
+options(view = FALSE)
+data <- read.csv("old_new_diff.csv")
+veg2023 <- read.csv("PntCntHabitat2023.csv")
+veg2012 <- read.csv("vegdata2012.csv")
+points <- read.csv("points.csv")
+```
+
+```{r wrangling obs}
+#keeping rows with data from 2012, 2013, 2014 and 2023
+data <- data[!is.na(data$Abund2012) & !is.na(data$Abund2013) & !is.na(data$Abund2014) & !is.na(data$GWWA_23), ] #95 points
+
+data <- data %>%
+  select(-X, -Site, -VERMIVORA.SP, -GWWA, -BRWA, -BWWA, -diff, -Diff, -Diff23_12, -Diff23_13, -Diff23_14)
+```
+
+```{r modeling with dredge}
+#global model including all predictors
+lm_global <- lm(GWWA_23 ~ Abund2012 + Abund2013 + Abund2014, data = data)
+summary(lm_global)
+
+
+#perform model selection using dredge
+options(na.action = "na.fail") # Required for dredge to handle NA values
+model_set <- dredge(lm_global)
+
+#view the dredge output
+print(model_set)
+
+#select the top model (lowest AIC)
+best_model <- get.models(model_set, 1)[[1]]
+
+#summary of the best model
+summary(best_model)
+
+#use the best model to predict the 2023 population
+data$Predicted_2023D <- predict(best_model, newdata = data)
+
+data$Predicted_2023_roundedD <- round(data$Predicted_2023D)
+
+#define lambda as the growth rate (adjust as needed)
+lambda <- 0.98
+
+#define the projection function
+dredgefuture_population_2033 <- function(pop_2023, lambda, years = 10) {
+  return(pop_2023 * (lambda ^ years))}
+
+#project the 2033 population based on the predicted 2023 population
+data$Predicted_2033D <- dredgefuture_population_2033(data$Predicted_2023D, lambda)
+
+#optionally, round the predicted 2033 populations
+data$Predicted_2033_roundedD <- round(data$Predicted_2033D)
+
+#summarize the projected population in 2033
+mean_projected_2033_roundedD <- mean(data$Predicted_2033_roundedD, na.rm = TRUE)
+cat("Mean projected population for 2033 (rounded):", mean_projected_2033_roundedD, "\n")
+
+#create a dataframe for the model coefficients
+coefficients_table <- data.frame(
+  Term = c("(Intercept)", "Abund2012", "Abund2013"),
+  Estimate = c(0.2994, 0.2250, 0.3108),
+  `Std. Error` = c(0.1142, 0.1096, 0.1140),
+  `t-value` = c(2.621, 2.052, 2.726),
+  `p-value` = c(0.01026, 0.04298, 0.00767))
+
+mean(data$Predicted_2023D)
+
+#create the table
+kable(coefficients_table, caption = "Table 1. Coefficients of the Best Model for Predicting GWWA Abundance in 2023") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+
+
+
+mean(data$Abund2012)
+mean(data$Abund2013)
+mean(data$Abund2014)
+mean(data$GWWA_23)
+
+# #model for all years
+# lm_model <- lm(GWWA_23 ~ Abund2012 + Abund2013 + Abund2014, data = data)
+# summary(lm_model)
+# 
+# #use the model to predict the 2023 population based on the abundance from previous years
+# data$Predicted_2023 <- predict(lm_model)
+# 
+# #optionally, round the predicted values for 2023
+# data$Predicted_2023_rounded <- round(data$Predicted_2023)
+# 
+# #define lambda as the growth rate (adjust as needed)
+# lambda <- .98  # Example growth rate of 5% per year
+# 
+# #define the projection function
+# future_population_2033 <- function(pop_2023, lambda, years = 10) {
+#   return(pop_2023 * (lambda ^ years))}
+# 
+# #project the 2033 population based on the predicted 2023 population
+# data$Predicted_2033 <- future_population_2033(data$Predicted_2023, lambda)
+# 
+# # Optionally, round the predicted 2033 populations
+# data$Predicted_2033_rounded <- round(data$Predicted_2033)
+# 
+# # Summarize the projected population in 2033
+# mean_projected_2033_rounded <- mean(data$Predicted_2033_rounded, na.rm = TRUE)
+# cat("Mean projected population for 2033 (rounded):", mean_projected_2033_rounded, "\n")
+
+```
+
+
+```{r wrangling veg}
+#Shrub..1m=Shrub<1m, Shrubs.1.2m=Shrub1-2m
+#getting percent shrub cover for 2012 veg
+veg2012$shrubsm_percnt <- veg2012$Shrub..1m / 40 * 100
+veg2012$shrublg_percnt <- veg2012$Shrub.1.2m / 40 * 100
+veg2012$treesm_percnt <- veg2012$Sapling..2m / 40 * 100
+veg2012$treelg_percnt <- veg2012$Sapling..2m.1 / 40 * 100
+veg2012$forbsm_percnt <- veg2012$Forb..20cm / 40 * 100
+veg2012$forblg_percnt <- veg2012$Forb.20cm / 40 * 100
+
+
+#weighing different size shrubs and trees, these columns are what we will use for major calculations
+veg2012$shrub_cover <- veg2012$shrubsm_percnt*0.5 + veg2012$shrublg_percnt
+veg2012$tree_cover <- veg2012$treesm_percnt*0.5 + veg2012$treelg_percnt
+veg2012$forb_cover <- veg2012$forbsm_percnt*0.5 + veg2012$forblg_percnt
+hist(veg2012$shrub_cover)
+hist(veg2012$tree_cover)
+hist(veg2012$forb_cover)
+
+#dropping unused columns from veg2012
+veg2012 <- veg2012 %>%
+  select(-Occupied., -Canopy, -Other, -Standing.Water., -Distance.to.water..m., -Distance.to.Forest..m..Edge, -Patch.Size, -Patch.Clumpiness, -Water.Type, -Point.Clumpiness, -Notes, -Shrub..1m, -Shrub.1.2m, -Sapling..2m, -Sapling..2m.1, -Other..1, -Other..2, -Other..3, -X.1, -X.2, -Snags..10cm.DBH, -Snags..10cm.DBH.1, -Grass, -Forb..20cm..1, -Forb.20cm..2, -Forb..20cm..3, -Forb..20cm..1.1, -Forb.20cm..2.1, -Forb..20cm..3.1, -X)
+
+write.csv(veg2012, "veg2012limit.csv")
+
+#dropping columns from veg 2023
+veg2023 <- veg2023 %>% select(-Site, -X, -Y, -X.1, -Move.point..)
+```
+
+```{r}
+bird <- read.csv("old_new_diff.csv")
+veg2012 <- read.csv("veg2012limit.csv")
+
+veg_merged <- merge(veg2012, veg2023, by.x = "Point.Name", by.y = "PointID", all = FALSE)
+
+#calculate change in shrub cover
+veg_merged <- veg_merged %>%
+  mutate(ShrubCoverChange = shrub_cover - PctShrub)
+
+#merge with bird count dataframe 
+bird_veg <- merge(veg_merged, bird, by.x = "Point.Name", by.y = "Point", all = FALSE)
+
+#dropping rows with NA's in change column
+bird_veg <- bird_veg[!is.na(bird_veg$Diff23_12), ] #leaves 56 points
+
+
+
+
+
+#linear regression of shrub cover change vs. GWWA change
+shrubmodel <- lm(Diff23_12 ~ ShrubCoverChange, data = bird_veg)
+summary(shrubmodel)
+
+
+bird_veg <- bird_veg %>% 
+  mutate(TreeCoverChange = tree_cover - PctTree)
+
+treemodel <- lm(Diff23_12 ~ TreeCoverChange, data = bird_veg)
+summary(treemodel)
+
+bird_veg <- bird_veg %>%
+  mutate(ForbCoverChange = forb_cover - PctForb)
+bird_veg <- bird_veg[!is.na(bird_veg$ForbCoverChange), ]
+
+forbmodel <- lm(Diff23_12 ~ ForbCoverChange, data = bird_veg)
+summary(forbmodel)
+
+
+
+
+#linear model with both shrub and herbaceous cover change as predictors
+shrubforb_model <- lm(Diff23_12 ~ ShrubCoverChange + ForbCoverChange, data = bird_veg)
+summary(shrubforb_model)
+
+shrubtree_model <- lm(Diff23_12 ~ ShrubCoverChange + TreeCoverChange, data = bird_veg)
+summary(shrubtree_model)
+
+forbtree_model <- lm(Diff23_12 ~ ForbCoverChange + TreeCoverChange, data = bird_veg)
+summary(forbtree_model)
+
+shrubtreenforb_model <- lm(Diff23_12 ~ ShrubCoverChange + ForbCoverChange + TreeCoverChange, data = bird_veg)
+summary(shrubtreenforb_model)
+
+null_model <- lm(Diff23_12 ~ 1, data = bird_veg)
+summary(null_model)
+
+
+AIC(shrubmodel)
+AIC(forbmodel)
+AIC(treemodel)
+AIC(shrubforb_model)
+AIC(shrubtree_model)
+AIC(forbtree_model) #lowest aic
+AIC(shrubtreenforb_model)
+
+
+#interaction models
+interaction1 <- lm(Diff23_12 ~ ShrubCoverChange * ForbCoverChange, data = bird_veg)
+summary(interaction1)
+interaction2 <- lm(Diff23_12 ~ ShrubCoverChange * TreeCoverChange, data = bird_veg)
+summary(interaction2)
+interaction4 <- lm(Diff23_12 ~ ForbCoverChange * TreeCoverChange, data = bird_veg)
+summary(interaction4)
+interaction3 <- lm(Diff23_12 ~ ShrubCoverChange * ForbCoverChange * TreeCoverChange, data = bird_veg)
+summary(interaction3)
+fullinteraction <- lm(Diff23_12 ~ ShrubCoverChange * ForbCoverChange + ShrubCoverChange * TreeCoverChange, data = bird_veg)
+summary(fullinteraction)
+
+AIC(interaction4)
+AIC(interaction1)
+AIC(interaction2)
+AIC(interaction3)
+AIC(fullinteraction)
+
+#AIC values
+aic_table <- data.frame(
+  AIC = c(AIC(forbtree_model), AIC(interaction1), AIC(interaction2), AIC(interaction3), AIC(interaction4), AIC(fullinteraction)))
+
+#rank AIC
+aic_table <- aic_table[order(aic_table$AIC), ]
+print(aic_table)
+
+```
+
+```{r}
+#create a table with model-level statistics only
+model_summary <- data.frame(
+  Model = c("forb+tree_model", "treemodel", "forbmodel", "shrub+tree_model", "forb*tree_model"),
+  Adj_R_Squared = c(0.027, 0.028, 0.037, 0.011, 0.008), 
+  P_Value = c(0.1866, 0.1157, 0.3702, 0.2784, 0.3438),
+  AIC = c(134.2451, 134.6027, 134.9586, 135.0923, 136.2414))
+
+#print the model summary table
+model_summary
+library(kableExtra)
+
+model_summary %>%
+  kable(format = "html", digits = 3, caption = "Table 2. Vegetation Model Summary with Statistics") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = "striped") %>%
+  row_spec(0, extra_css = "border-left: none;") %>%
+  column_spec(1, border_left = FALSE)
+
+kable(model_summary, caption = "Table 2. Vegetation Model Summary with Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+```
+
+```{r}
+library(ggplot2)
+
+#tree cover
+ggplot(bird_veg, aes(x = TreeCoverChange, y = Diff23_12)) +
+  geom_point(alpha = 0.7, color = "purple", size = 3) +
+  geom_smooth(method = "lm", color = "darkorange", fill = "lightgoldenrod", se = TRUE, size = 1) +
+  labs(
+    title = "Tree Cover Change and GWWA Abundance Change (2012-2023)",
+    subtitle = "Linear relationship with confidence interval",
+    x = "Tree Cover",
+    y = "GWWA Abundance") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 10, face = "italic"),
+    axis.title = element_text(face = "bold"))
+
+
+#shrub cover change plot
+ggplot(bird_veg, aes(x = ShrubCoverChange, y = Diff23_12)) +
+  geom_point(alpha = 0.7, color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", color = "darkorange", fill = "lightgoldenrod", se = TRUE, size = 1) +
+  labs(
+    title = "Shrub Cover Change and GWWA Abundance Change (2012-2023)",
+    subtitle = "Linear relationship with confidence interval",
+    x = "Shrub Cover",
+    y = "GWWA Abundance") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 10, face = "italic"),
+    axis.title = element_text(face = "bold"))
+
+#forb cover change plot
+ggplot(bird_veg, aes(x = ForbCoverChange, y = Diff23_12)) +
+  geom_point(alpha = 0.7, color = "forestgreen", size = 3) +
+  geom_smooth(method = "lm", color = "darkorange", fill = "lightgoldenrod", se = TRUE, size = 1) +
+  labs(
+    title = "Forb Cover Change and GWWA Abundance Change (2023 - 2012)",
+    subtitle = "Linear relationship with confidence interval",
+    x = "Forb Cover",
+    y = "GWWA Abundance") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 10, face = "italic"),
+    axis.title = element_text(face = "bold"))
+
+
+```
+
+
